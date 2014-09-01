@@ -51,6 +51,7 @@ module Email
     end
 
     def format_notification
+      style('body', 'direction:rtl;') if GlobalSetting.rtl_css
       style('.previous-discussion', 'font-size: 17px; color: #444;')
       style('.notification-date', "text-align:right;color:#999999;padding-right:5px;font-family:'lucida grande',tahoma,verdana,arial,sans-serif;font-size:11px")
       style('.username', "font-size:13px;font-family:'lucida grande',tahoma,verdana,arial,sans-serif;color:#3b5998;text-decoration:none;font-weight:bold")
