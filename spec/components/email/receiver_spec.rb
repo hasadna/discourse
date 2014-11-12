@@ -28,7 +28,7 @@ describe Email::Receiver do
       expect { test_parse_body(fixture_file("emails/no_content_reply.eml")) }.to raise_error(Email::Receiver::EmptyEmailError)
     end
 
-    pending "raises EmailUnparsableError if the headers are corrupted" do
+    skip "raises EmailUnparsableError if the headers are corrupted" do
       expect { ; }.to raise_error(Email::Receiver::EmailUnparsableError)
     end
 
@@ -61,6 +61,10 @@ describe Email::Receiver do
       test_parse_body(fixture_file("emails/via_line.eml")).should == "Hello this email has content!"
     end
 
+    it "removes an 'on date wrote' quoting line" do
+      test_parse_body(fixture_file("emails/on_wrote.eml")).should == "Sure, all you need to do is frobnicate the foobar and you'll be all set!"
+    end
+
     it "removes the 'Previous Discussion' marker" do
       test_parse_body(fixture_file("emails/previous.eml")).should == "This will not include the previous discussion that is present in this email."
     end
@@ -76,6 +80,21 @@ it there without worrying about it too much, imo.
 
 Thanks for listening."
       )
+    end
+
+    it "handles multiple paragraphs when parsing html" do
+      test_parse_body(fixture_file("emails/html_paragraphs.eml")).
+          should == (
+"Awesome!
+
+Pleasure to have you here!
+
+:boom:"
+      )
+    end
+
+    it "properly renders email reply from MS Outlook client" do
+      test_parse_body(fixture_file("emails/outlook.eml")).should == "Microsoft Outlook 2010"
     end
 
     it "converts back to UTF-8 at the end" do
@@ -125,7 +144,10 @@ Thanks for listening."
         receiver.process
 
         topic.posts.count.should == (start_count + 1)
-        topic.posts.last.cooked.strip.should == fixture_file("emails/valid_reply.cooked").strip
+        created_post = topic.posts.last
+        created_post.via_email.should == true
+        created_post.raw_email.should == fixture_file("emails/valid_reply.eml")
+        created_post.cooked.strip.should == fixture_file("emails/valid_reply.cooked").strip
       end
     end
 
@@ -162,7 +184,7 @@ Thanks for listening."
 
         topic.posts.count.should == (start_count + 1)
         topic.posts.last.cooked.should match /<img src=['"](\/uploads\/default\/\d+\/\w{16}\.png)['"] width=['"]289['"] height=['"]126['"]>/
-        Upload.find_by(sha1: upload_sha).should_not be_nil
+        Upload.find_by(sha1: upload_sha).should_not == nil
       end
 
     end
@@ -198,6 +220,68 @@ Thanks for listening."
       end
     end
 
+  end
+
+  describe "posting reply to a closed topic" do
+    let(:reply_key) { raise "Override this in a lower describe block" }
+    let(:email_raw) { raise "Override this in a lower describe block" }
+    let(:receiver) { Email::Receiver.new(email_raw) }
+    let(:topic) { Fabricate(:topic, closed: true) }
+    let(:post) { Fabricate(:post, topic: topic, post_number: 1) }
+    let(:replying_user_email) { 'jake@adventuretime.ooo' }
+    let(:replying_user) { Fabricate(:user, email: replying_user_email, trust_level: 2) }
+    let(:email_log) { EmailLog.new(reply_key: reply_key,
+                                   post: post,
+                                   post_id: post.id,
+                                   topic_id: topic.id,
+                                   email_type: 'user_posted',
+                                   user: replying_user,
+                                   user_id: replying_user.id,
+                                   to_address: replying_user_email
+    ) }
+
+    before do
+      email_log.save
+    end
+
+    describe "should not create post" do
+      let!(:reply_key) { '59d8df8370b7e95c5a49fbf86aeb2c93' }
+      let!(:email_raw) { fixture_file("emails/valid_reply.eml") }
+      it "raises a TopicClosedError" do
+        expect { receiver.process }.to raise_error(Email::Receiver::TopicClosedError)
+      end
+    end
+  end
+
+  describe "posting reply to a deleted topic" do
+    let(:reply_key) { raise "Override this in a lower describe block" }
+    let(:email_raw) { raise "Override this in a lower describe block" }
+    let(:receiver) { Email::Receiver.new(email_raw) }
+    let(:deleted_topic) { Fabricate(:deleted_topic) }
+    let(:post) { Fabricate(:post, topic: deleted_topic, post_number: 1) }
+    let(:replying_user_email) { 'jake@adventuretime.ooo' }
+    let(:replying_user) { Fabricate(:user, email: replying_user_email, trust_level: 2) }
+    let(:email_log) { EmailLog.new(reply_key: reply_key,
+                                   post: post,
+                                   post_id: post.id,
+                                   topic_id: deleted_topic.id,
+                                   email_type: 'user_posted',
+                                   user: replying_user,
+                                   user_id: replying_user.id,
+                                   to_address: replying_user_email
+    ) }
+
+    before do
+      email_log.save
+    end
+
+    describe "should not create post" do
+      let!(:reply_key) { '59d8df8370b7e95c5a49fbf86aeb2c93' }
+      let!(:email_raw) { fixture_file("emails/valid_reply.eml") }
+      it "raises a TopicNotFoundError" do
+        expect { receiver.process }.to raise_error(Email::Receiver::TopicNotFoundError)
+      end
+    end
   end
 
   describe "posting a new topic" do
@@ -308,7 +392,7 @@ greatest show ever created. Everyone should watch it.
       to = "some@email.com"
 
       Fabricate(:category, email_in_allow_strangers: false, email_in: to)
-      SiteSetting.email_in_min_trust = TrustLevel.levels[:elder].to_s
+      SiteSetting.email_in_min_trust = TrustLevel[4].to_s
 
       # no email in for user
       expect{

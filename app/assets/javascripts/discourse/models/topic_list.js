@@ -31,6 +31,8 @@ function finderFor(filter, params) {
 }
 
 Discourse.TopicList = Discourse.Model.extend({
+  canLoadMore: Em.computed.notEmpty("more_topics_url"),
+
   forEachNew: function(topics, callback) {
     var topicIds = [];
     _.each(this.get('topics'),function(topic) {
@@ -68,7 +70,6 @@ Discourse.TopicList = Discourse.Model.extend({
 
     var moreUrl = this.get('more_topics_url');
     if (moreUrl) {
-
       var self = this;
       this.set('loadingMore', true);
 
@@ -84,7 +85,11 @@ Discourse.TopicList = Discourse.Model.extend({
             topics.pushObject(t);
           });
 
-          self.setProperties({ loadingMore: false, more_topics_url: result.topic_list.more_topics_url });
+          self.setProperties({
+            loadingMore: false,
+            more_topics_url: result.topic_list.more_topics_url
+          });
+
           Discourse.Session.currentProp('topicList', self);
           return self.get('more_topics_url');
         }
@@ -123,20 +128,19 @@ Discourse.TopicList = Discourse.Model.extend({
 Discourse.TopicList.reopenClass({
 
   loadTopics: function(topic_ids, filter) {
-    var defer = new Ember.Deferred(),
-        url = Discourse.getURL("/") + filter + "?topic_ids=" + topic_ids.join(",");
+    return new Ember.RSVP.Promise(function(resolve, reject) {
+      var url = Discourse.getURL("/") + filter + "?topic_ids=" + topic_ids.join(",");
 
-    Discourse.ajax({url: url}).then(function (result) {
-      if (result) {
-        // the new topics loaded from the server
-        var newTopics = Discourse.TopicList.topicsFrom(result);
-        defer.resolve(newTopics);
-      } else {
-        defer.reject();
-      }
-    }).then(null, function(){ defer.reject(); });
-
-    return defer;
+      Discourse.ajax({url: url}).then(function (result) {
+        if (result) {
+          // the new topics loaded from the server
+          var newTopics = Discourse.TopicList.topicsFrom(result);
+          resolve(newTopics);
+        } else {
+          reject();
+        }
+      }).catch(reject);
+    });
   },
 
   /**
@@ -193,34 +197,43 @@ Discourse.TopicList.reopenClass({
     @method list
     @param {Object} filter The menu item to filter to
     @param {Object} params Any additional params to pass to TopicList.find()
+    @param {Object} extras Additional finding options, such as caching
     @returns {Promise} a promise that resolves to the list of topics
   **/
-  list: function(filter, params) {
-    var session = Discourse.Session.current(),
-        list = session.get('topicList'),
-        tracking = Discourse.TopicTrackingState.current();
+  list: function(filter, filterParams, extras) {
+    var tracking = Discourse.TopicTrackingState.current();
 
+    extras = extras || {};
     return new Ember.RSVP.Promise(function(resolve) {
-      // Try to use the cached version
-      if (list && (list.get('filter') === filter) &&
-               _.isEqual(list.get('listParams'), params)) {
-        list.set('loaded', true);
+      var session = Discourse.Session.current();
 
-        if (tracking) {
-          tracking.updateTopics(list.get('topics'));
+      if (extras.cached) {
+        var cachedList = session.get('topicList');
+
+        // Try to use the cached version if it exists and is greater than the topics per page
+        if (cachedList && (cachedList.get('filter') === filter) &&
+            (cachedList.get('topics.length') || 0) > Discourse.SiteSettings.topics_per_page &&
+            _.isEqual(cachedList.get('listParams'), filterParams)) {
+          cachedList.set('loaded', true);
+
+          if (tracking) {
+            tracking.updateTopics(cachedList.get('topics'));
+          }
+          return resolve(cachedList);
         }
-        return resolve(list);
+        session.set('topicList', null);
+      } else {
+        // Clear the cache
+        session.setProperties({topicList: null, topicListScrollPosition: null});
       }
 
-      // Perform the search
-      session.setProperties({topicList: null, topicListScrollPosition: null});
 
       // Clean up any string parameters that might slip through
-      params = params || {};
-      Ember.keys(params).forEach(function(k) {
-        var val = params[k];
+      filterParams = filterParams || {};
+      Ember.keys(filterParams).forEach(function(k) {
+        var val = filterParams[k];
         if (val === "undefined" || val === "null" || val === 'false') {
-          params[k] = undefined;
+          filterParams[k] = undefined;
         }
       });
 
@@ -233,10 +246,10 @@ Discourse.TopicList.reopenClass({
           }
         }
       });
-      return resolve(Discourse.TopicList.find(filter, _.extend(findParams, params || {})));
+      return resolve(Discourse.TopicList.find(filter, _.extend(findParams, filterParams || {})));
 
     }).then(function(list) {
-      list.set('listParams', params);
+      list.set('listParams', filterParams);
       if (tracking) {
         tracking.sync(list, list.filter);
         tracking.trackIncoming(list.filter);
@@ -247,7 +260,7 @@ Discourse.TopicList.reopenClass({
   },
 
   find: function(filter, params) {
-    return PreloadStore.getAndRemove("topic_list", finderFor(filter, params)).then(function(result) {
+    return PreloadStore.getAndRemove("topic_list_" + filter, finderFor(filter, params)).then(function(result) {
       return Discourse.TopicList.from(result, filter, params);
     });
   }

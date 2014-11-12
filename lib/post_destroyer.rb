@@ -4,6 +4,14 @@
 #
 class PostDestroyer
 
+  def self.destroy_old_hidden_posts
+    Post.where(deleted_at: nil)
+        .where("hidden_at < ?", 30.days.ago)
+        .find_each do |post|
+        PostDestroyer.new(Discourse.system_user, post).destroy
+      end
+  end
+
   def self.destroy_stubs
     # exclude deleted topics and posts that are actively flagged
     Post.where(deleted_at: nil, user_deleted: true)
@@ -25,17 +33,18 @@ class PostDestroyer
     end
   end
 
-  def initialize(user, post)
+  def initialize(user, post, opts={})
     @user = user
     @post = post
     @topic = post.topic if post
+    @opts = opts
   end
 
   def destroy
-    if @user.staff?
-      staff_destroyed
+    if @user.staff? || SiteSetting.delete_removed_posts_after < 1
+      perform_delete
     elsif @user.id == @post.user_id
-      user_destroyed
+      mark_for_deletion
     end
   end
 
@@ -56,7 +65,7 @@ class PostDestroyer
 
   # When a post is properly deleted. Well, it's still soft deleted, but it will no longer
   # show up in the topic
-  def staff_destroyed
+  def perform_delete
     Post.transaction do
       @post.trash!(@user)
       if @post.topic
@@ -71,7 +80,12 @@ class PostDestroyer
       @post.update_flagged_posts_count
       remove_associated_replies
       remove_associated_notifications
-      @post.topic.trash!(@user) if @post.topic && @post.post_number == 1
+      if @post.topic && @post.post_number == 1
+        StaffActionLogger.new(@user).log_topic_deletion(@post.topic, @opts.slice(:context)) if @user.id != @post.user_id
+        @post.topic.trash!(@user)
+      elsif @user.id != @post.user_id
+        StaffActionLogger.new(@user).log_post_deletion(@post, @opts.slice(:context))
+      end
       update_associated_category_latest_topic
       update_user_counts
     end
@@ -80,28 +94,22 @@ class PostDestroyer
   end
 
   # When a user 'deletes' their own post. We just change the text.
-  def user_destroyed
+  def mark_for_deletion
     Post.transaction do
-      @post.revise(@user, I18n.t('js.post.deleted_by_author', count: SiteSetting.delete_removed_posts_after), force_new_version: true)
+      @post.revise(@user, { raw: I18n.t('js.post.deleted_by_author', count: SiteSetting.delete_removed_posts_after) }, force_new_version: true)
       @post.update_column(:user_deleted, true)
       @post.update_flagged_posts_count
       @post.topic_links.each(&:destroy)
     end
-
-    # covered by PostRevisor
-    # @post.publish_change_to_clients! :revised
   end
 
   def user_recovered
     Post.transaction do
       @post.update_column(:user_deleted, false)
       @post.skip_unique_check = true
-      @post.revise(@user, @post.revisions.last.modifications["raw"][0], force_new_version: true)
+      @post.revise(@user, { raw: @post.revisions.last.modifications["raw"][0] }, force_new_version: true)
       @post.update_flagged_posts_count
     end
-
-    # covered by PostRevisor
-    # @post.publish_change_to_clients! :revised
   end
 
 

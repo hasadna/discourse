@@ -80,7 +80,7 @@ module Discourse
 
     # Set Time.zone default to the specified zone and make Active Record auto-convert to this zone.
     # Run "rake -D time" for a list of tasks for finding time zone names. Default is UTC.
-    config.time_zone = 'Eastern Time (US & Canada)'
+    config.time_zone = 'UTC'
 
     # auto-load server locale in plugins
     config.i18n.load_path += Dir["#{Rails.root}/plugins/*/config/locales/server.*.yml"]
@@ -109,6 +109,11 @@ module Discourse
 
     # see: http://stackoverflow.com/questions/11894180/how-does-one-correctly-add-custom-sql-dml-in-migrations/11894420#11894420
     config.active_record.schema_format = :sql
+
+    if rails_master?
+      # Opt-into the default behavior in Rails 5
+      # config.active_record.raise_in_transactional_callbacks = true
+    end
 
     # per https://www.owasp.org/index.php/Password_Storage_Cheat_Sheet
     config.pbkdf2_iterations = 64000

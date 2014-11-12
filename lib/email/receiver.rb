@@ -15,6 +15,8 @@ module Email
     class UserNotFoundError < ProcessingError; end
     class UserNotSufficientTrustLevelError < ProcessingError; end
     class BadDestinationAddress < ProcessingError; end
+    class TopicNotFoundError < ProcessingError; end
+    class TopicClosedError < ProcessingError; end
     class EmailLogNotFound < ProcessingError; end
     class InvalidPost < ProcessingError; end
 
@@ -61,13 +63,15 @@ module Email
         end
 
         raise UserNotFoundError if @user.blank?
-        raise UserNotSufficientTrustLevelError.new @user unless @allow_strangers || @user.has_trust_level?(TrustLevel.levels[SiteSetting.email_in_min_trust.to_i])
+        raise UserNotSufficientTrustLevelError.new @user unless @allow_strangers || @user.has_trust_level?(TrustLevel[SiteSetting.email_in_min_trust.to_i])
 
         create_new_topic
       else
         @email_log = dest_info[:obj]
 
         raise EmailLogNotFound if @email_log.blank?
+        raise TopicNotFoundError if Topic.find_by_id(@email_log.topic_id).nil?
+        raise TopicClosedError if Topic.find_by_id(@email_log.topic_id).closed?
 
         create_reply
       end
@@ -114,7 +118,8 @@ module Email
         html = fix_charset message.html_part
         text = fix_charset message.text_part
         # TODO picking text if available may be better
-        if text && !html
+        # in case of email reply from MS Outlook client, prefer text
+        if (text && !html) || (text && (message.header.to_s =~ /X-MS-Has-Attach/ || message.header.to_s =~ /Microsoft Outlook/))
           return text
         end
       elsif message.content_type =~ /text\/html/
@@ -146,7 +151,7 @@ module Email
       end
     end
 
-    REPLYING_HEADER_LABELS = ['From', 'Sent', 'To', 'Subject', 'Reply To']
+    REPLYING_HEADER_LABELS = ['From', 'Sent', 'To', 'Subject', 'Reply To', 'Cc', 'Bcc', 'Date']
     REPLYING_HEADER_REGEX = Regexp.union(REPLYING_HEADER_LABELS.map { |lbl| "#{lbl}:" })
 
     def discourse_email_trimmer(body)
@@ -159,7 +164,8 @@ module Email
                  (l =~ /via #{SiteSetting.title}(.*)\:$/) ||
                  # This one might be controversial but so many reply lines have years, times and end with a colon.
                  # Let's try it and see how well it works.
-                 (l =~ /\d{4}/ && l =~ /\d:\d\d/ && l =~ /\:$/)
+                 (l =~ /\d{4}/ && l =~ /\d:\d\d/ && l =~ /\:$/) ||
+                 (l =~ /On \w+ \d+,? \d+,?.*wrote:/)
 
         # Headers on subsequent lines
         break if (0..2).all? { |off| lines[idx+off] =~ REPLYING_HEADER_REGEX }
@@ -241,6 +247,10 @@ module Email
     end
 
     def create_post(user, options)
+      # Mark the reply as incoming via email
+      options[:via_email] = true
+      options[:raw_email] = @raw
+
       creator = PostCreator.new(user, options)
       post = creator.create
 

@@ -11,6 +11,17 @@ module ApplicationHelper
   include CanonicalURL::Helpers
   include ConfigurableUrls
 
+  def shared_session_key
+    if SiteSetting.long_polling_base_url != '/'.freeze && current_user
+      sk = "shared_session_key"
+      return request.env[sk] if request.env[sk]
+
+      request.env[sk] = key = (session[sk] ||= SecureRandom.hex)
+      $redis.setex "#{sk}_#{key}", 7.days, current_user.id.to_s
+      key
+    end
+  end
+
   def script(*args)
     if SiteSetting.enable_cdn_js_debugging && GlobalSetting.cdn_url
       tags = javascript_include_tag(*args, "crossorigin" => "anonymous")
@@ -114,7 +125,7 @@ module ApplicationHelper
   # Look up site content for a key. If the key is blank, you can supply a block and that
   # will be rendered instead.
   def markdown_content(key, replacements=nil)
-    result = PrettyText.cook(SiteContent.content_for(key, replacements || {})).html_safe
+    result = PrettyText.cook(SiteText.text_for(key, replacements || {})).html_safe
     if result.blank? && block_given?
       yield
       nil

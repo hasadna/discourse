@@ -1,4 +1,15 @@
 require "open-uri"
+require "addressable/uri"
+
+class URI::Parser
+
+  # HACK to support underscores in URLs
+  def split(url)
+    a = Addressable::URI::parse(url)
+    [a.scheme, a.userinfo, a.host, a.port, nil, a.path, nil, a.query, a.fragment]
+  end
+
+end
 
 class FileHelper
 
@@ -28,7 +39,7 @@ class FileHelper
   private
 
   def self.images
-    @@images ||= Set.new ["jpg", "jpeg", "png", "gif", "tif", "tiff", "bmp"]
+    @@images ||= Set.new ["jpg", "jpeg", "png", "gif", "tif", "tiff", "bmp", "svg", "webp"]
   end
 
   def self.images_regexp
